@@ -32,12 +32,19 @@
 #include <cstring>
 #include <sstream>
 
- #include <sys/time.h>
-
 #include "vmem/virtual_memory.h"
+
+#include "stmd_spin.hpp"
 
 namespace vta {
 namespace sim {
+
+STMD tpool = STMD(8);
+
+typedef std::int_fast32_t i32;
+typedef std::uint_fast32_t u32;
+typedef std::int_fast64_t i64;
+typedef std::uint_fast64_t ui64;
 
 /*! \brief debug flag for skipping computation */
 enum DebugFlagMask {
@@ -172,15 +179,23 @@ class SRAM {
     memset(sram_ptr, 0, kElemBytes * xtotal * op->y_pad_0);
     sram_ptr += xtotal * op->y_pad_0;
 
-    for (uint32_t y = 0; y < op->y_size; ++y) {
-      memset(sram_ptr, 0, kElemBytes * op->x_pad_0);
-      sram_ptr += op->x_pad_0;
-      memcpy(sram_ptr, dram_ptr, kElemBytes * op->x_size);
-      sram_ptr += op->x_size;
-      memset(sram_ptr, 0, kElemBytes * op->x_pad_1);
-      sram_ptr += op->x_pad_1;
-      dram_ptr += kElemBytes * op->x_stride;
-    }
+    tpool.parallelize_loop(0, op->y_size, [&sram_ptr, &dram_ptr, &op](const u32 y){
+      // for (uint32_t y = start; y < end; ++y) {
+        DType* _sram_ptr = sram_ptr + y * (op->x_pad_0 + op->x_size + op->x_pad_1);
+        uint8_t* _dram_ptr = dram_ptr + y * (kElemBytes * op->x_stride);      
+          
+        memset(_sram_ptr, 0, kElemBytes * op->x_pad_0);
+        _sram_ptr += op->x_pad_0;
+        memcpy(_sram_ptr, _dram_ptr, kElemBytes * op->x_size);
+        _sram_ptr += op->x_size;
+        memset(_sram_ptr, 0, kElemBytes * op->x_pad_1);
+        _sram_ptr += op->x_pad_1;
+        _dram_ptr += kElemBytes * op->x_stride;
+      // }
+    }, 8);
+    sram_ptr += (op->x_pad_0 + op->x_size + op->x_pad_1) * op->y_size;
+    dram_ptr += (kElemBytes * op->x_stride) * op->y_size;
+
     memset(sram_ptr, 0, kElemBytes * xtotal * op->y_pad_1);
   }
 
@@ -208,22 +223,30 @@ class SRAM {
     memset(sram_ptr, 0, kElemBytes * xtotal * op->y_pad_0);
     sram_ptr += xtotal * op->y_pad_0;
 
-    for (uint32_t y = 0; y < op->y_size; ++y) {
-      memset(sram_ptr, 0, kElemBytes * op->x_pad_0);
-      sram_ptr += op->x_pad_0;
+    tpool.parallelize_loop(0, op->y_size, [&sram_ptr, &dram_ptr, factor, &op](u32 y){
+      // for (uint32_t y = start; y < end; ++y) {
+        DType* _sram_ptr = sram_ptr + y * (op->x_pad_0 + op->x_size + op->x_pad_1);
+        int8_t* _dram_ptr = dram_ptr + y * (kElemBytes / factor * op->x_stride);
 
-      int32_t* sram_ele_ptr = (int32_t*)sram_ptr;
-      for (uint32_t x = 0; x < op->x_size * VTA_BATCH * VTA_BLOCK_OUT; ++x) {
-        *(sram_ele_ptr + x) = (int32_t)*(dram_ptr + x);
-      }
-      sram_ptr += op->x_size;
+        memset(_sram_ptr, 0, kElemBytes * op->x_pad_0);
+        _sram_ptr += op->x_pad_0;
 
-      memset(sram_ptr, 0, kElemBytes * op->x_pad_1);
-      sram_ptr += op->x_pad_1;
+        int32_t* sram_ele_ptr = (int32_t*)_sram_ptr;
+        for (uint32_t x = 0; x < op->x_size * VTA_BATCH * VTA_BLOCK_OUT; ++x) {
+          *(sram_ele_ptr + x) = (int32_t)*(_dram_ptr + x);
+        }
+        _sram_ptr += op->x_size;
 
-      // dram one element is 1 bytes rather than 4 bytes
-      dram_ptr += kElemBytes / factor * op->x_stride;
-    }
+        memset(_sram_ptr, 0, kElemBytes * op->x_pad_1);
+        _sram_ptr += op->x_pad_1;
+
+        // dram one element is 1 bytes rather than 4 bytes
+        _dram_ptr += kElemBytes / factor * op->x_stride;
+      // }
+    }, 8);
+    sram_ptr += (op->x_pad_0 + op->x_size + op->x_pad_1) * op->y_size;
+    dram_ptr += (kElemBytes / factor * op->x_stride) * op->y_size;
+
     memset(sram_ptr, 0, kElemBytes * xtotal * op->y_pad_1);
   }
 
@@ -239,16 +262,18 @@ class SRAM {
     int target_width = (target_bits * kLane + 7) / 8;
     BitPacker<kBits> src(data_ + op->sram_base);
     BitPacker<target_bits> dst(dram->GetAddr(op->dram_base * target_width));
-    for (uint32_t y = 0; y < op->y_size; ++y) {
-      for (uint32_t x = 0; x < op->x_size; ++x) {
-        uint32_t sram_base = y * op->x_size + x;
-        uint32_t dram_base = y * op->x_stride + x;
-        for (int i = 0; i < kLane; ++i) {
-          dst.SetSigned(dram_base * kLane + i,
-                        src.GetSigned(sram_base * kLane +i));
+    tpool.parallelize_loop(0, op->y_size, [&op, &src, &dst](u32 y){
+      // for (uint32_t y = 0; y < op->y_size; ++y) {
+        for (uint32_t x = 0; x < op->x_size; ++x) {
+          uint32_t sram_base = y * op->x_size + x;
+          uint32_t dram_base = y * op->x_stride + x;
+          for (int i = 0; i < kLane; ++i) {
+            dst.SetSigned(dram_base * kLane + i,
+                          src.GetSigned(sram_base * kLane +i));
+          }
         }
-      }
-    }
+      // }
+    });
   }
 
  private:
@@ -402,7 +427,8 @@ class Device {
     if (!op->reset_reg) {
       prof_->gemm_counter += op->iter_out * op->iter_in * (op->uop_end - op->uop_bgn);
       if (prof_->SkipExec()) return;
-      for (uint32_t y = 0; y < op->iter_out; ++y) {
+      tpool.parallelize_loop(0, op->iter_out, [&op, this](u32 y){
+      // for (uint32_t y = start; y < end; ++y) {
         for (uint32_t x = 0; x < op->iter_in; ++x) {
           for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
             VTAUop* uop_ptr = static_cast<VTAUop*>(uop_.BeginPtr(uindex));
@@ -433,23 +459,26 @@ class Device {
             }
           }
         }
-      }
+      // }       
+     });
     } else {
       if (prof_->SkipExec()) return;
       // reset
-      for (uint32_t y = 0; y < op->iter_out; ++y) {
-        for (uint32_t x = 0; x < op->iter_in; ++x) {
-          for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
-            VTAUop* uop_ptr = static_cast<VTAUop*>(uop_.BeginPtr(uindex));
-            uint32_t acc_idx = uop_ptr->dst_idx;
-            acc_idx += y * op->dst_factor_out + x * op->dst_factor_in;
-            BitPacker<VTA_ACC_WIDTH> acc(acc_.BeginPtr(acc_idx));
-            for (uint32_t i = 0; i < VTA_BATCH * VTA_BLOCK_OUT; ++i) {
-              acc.SetSigned(i, 0);
+      tpool.parallelize_loop(0, op->iter_out, [&op, this](u32 y){
+        // for (uint32_t y = start; y < end; ++y) {
+          for (uint32_t x = 0; x < op->iter_in; ++x) {
+            for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
+              VTAUop* uop_ptr = static_cast<VTAUop*>(uop_.BeginPtr(uindex));
+              uint32_t acc_idx = uop_ptr->dst_idx;
+              acc_idx += y * op->dst_factor_out + x * op->dst_factor_in;
+              BitPacker<VTA_ACC_WIDTH> acc(acc_.BeginPtr(acc_idx));
+              for (uint32_t i = 0; i < VTA_BATCH * VTA_BLOCK_OUT; ++i) {
+                acc.SetSigned(i, 0);
+              }
             }
           }
-        }
-      }
+        // }        
+      }); 
     }
   }
 
@@ -503,27 +532,29 @@ class Device {
   void RunALULoop(const VTAAluInsn* op, F func) {
     prof_->alu_counter += op->iter_out * op->iter_in * (op->uop_end - op->uop_bgn);
     if (prof_->SkipExec()) return;
-    for (int y = 0; y < op->iter_out; ++y) {
-      for (int x = 0; x < op->iter_in; ++x) {
-        for (int k = op->uop_bgn; k < op->uop_end; ++k) {
-          // Read micro op
-          VTAUop* uop_ptr = static_cast<VTAUop*>(uop_.BeginPtr(k));
-          uint32_t dst_index = uop_ptr->dst_idx;
-          uint32_t src_index = uop_ptr->src_idx;
-          dst_index += y * op->dst_factor_out + x * op->dst_factor_in;
-          src_index += y * op->src_factor_out + x * op->src_factor_in;
-          BitPacker<VTA_ACC_WIDTH> dst(acc_.BeginPtr(dst_index));
-          BitPacker<VTA_ACC_WIDTH> src(acc_.BeginPtr(src_index));
-          for (int k = 0; k < VTA_BATCH * VTA_BLOCK_OUT; ++k) {
-            if (use_imm) {
-              dst.SetSigned(k, func(dst.GetSigned(k), op->imm));
-            } else {
-              dst.SetSigned(k, func(dst.GetSigned(k), src.GetSigned(k)));
+    tpool.parallelize_loop(0, op->iter_in, [&op, &func, this](u32 x){
+      for (int y = 0; y < op->iter_out; ++y) {
+        // for (int x = start; x < end; ++x) {
+          for (int k = op->uop_bgn; k < op->uop_end; ++k) {
+            // Read micro op
+            VTAUop* uop_ptr = static_cast<VTAUop*>(uop_.BeginPtr(k));
+            uint32_t dst_index = uop_ptr->dst_idx;
+            uint32_t src_index = uop_ptr->src_idx;
+            dst_index += y * op->dst_factor_out + x * op->dst_factor_in;
+            src_index += y * op->src_factor_out + x * op->src_factor_in;
+            BitPacker<VTA_ACC_WIDTH> dst(acc_.BeginPtr(dst_index));
+            BitPacker<VTA_ACC_WIDTH> src(acc_.BeginPtr(src_index));
+            for (int k = 0; k < VTA_BATCH * VTA_BLOCK_OUT; ++k) {
+              if (use_imm) {
+                dst.SetSigned(k, func(dst.GetSigned(k), op->imm));
+              } else {
+                dst.SetSigned(k, func(dst.GetSigned(k), src.GetSigned(k)));
+              }
             }
           }
-        }
+        // }
       }
-    }
+    });    
   }
   // the finish counter
   int finish_counter_{0};
@@ -595,10 +626,6 @@ int VTADeviceExec(vta_phy_addr_t insn_phy_addr,
   if (global_handle == nullptr) {
     global_handle = VTADeviceAlloc();
   }
-  struct timeval tvs, tve;
-  gettimeofday(&tvs, 0);
-  auto ret = static_cast<vta::sim::Device*>(global_handle)->Run(
+  return static_cast<vta::sim::Device*>(global_handle)->Run(
       insn_phy_addr, insn_count, wait_cycles);
-  gettimeofday(&tvs, 0);
-  return ret;
 }
