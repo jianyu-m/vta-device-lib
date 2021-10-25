@@ -31,6 +31,7 @@
 #include <mutex>
 #include <vector>
 #include <map>
+#include <new>
 #include <unordered_map>
 #include <memory>
 
@@ -106,7 +107,7 @@ class VirtualMemoryManager {
     // construct a new page
     explicit Page(size_t ptable_begin, size_t num_pages)
         : ptable_begin(ptable_begin), num_pages(num_pages) {
-      data = new DType[num_pages];
+      data = new (std::align_val_t(4096)) DType[num_pages];
     }
     ~Page() {
       delete [] data;
