@@ -145,6 +145,7 @@ void VTAInvalidateCache(void* vir_addr, vta_phy_addr_t phy_addr, int size);
  * Stub for Run
  */
 int VTADeviceExec(vta_phy_addr_t insn_phy_addr,
+                 vta_phy_addr_t offset,
                  uint32_t insn_count,
                  uint32_t wait_cycles);
 
