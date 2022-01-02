@@ -59,8 +59,11 @@ void aes128_enc_cacheline(__m128i key_schedule[20], uint8_t *plaintext, uint8_t 
     aes128_enc(key_schedule, (uint8_t *)plaintext + 48, (uint8_t *)cipher + 48);
 }
 
-inline int compare_tag(raw_tag_t a, raw_tag_t b) {
-    return ((data_t *)a)->c == ((data_t *)b)->c;
+inline void compare_tag(raw_tag_t a, raw_tag_t b) {
+    int r = ((data_t *)a)->c == ((data_t *)b)->c;
+    if (!r) {
+        printf("tag is not the same!!\n");
+    }
 }
 
 inline void copy_tag(raw_tag_t dst, raw_tag_t src) {
