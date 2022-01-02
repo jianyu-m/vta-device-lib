@@ -98,8 +98,8 @@ inline void copy_tag(raw_tag_t dst, raw_tag_t src) {
 
 #define DO_CHECK_(counter_ptr, hash_ptr, mtag, do_tag, hash_length, do_add)     \
     cnt_xp = cnt_x;                                                             \
-    cnt_y = (cnt_x % 8);                                                        \
-    cnt_x = (cnt_x / 8);                                                        \
+    cnt_x = (cnt_xp / 8);                                                        \
+    cnt_y = (cnt_xp % 8);                                                        \
     counter = (data_t *)(counter_ptr);                                          \
     if (do_add) counter->c += 1;                                                \
     vmac##hash_length(key_schedule, (uint8_t *)(hash_ptr), tag, counter->c);    \
@@ -121,10 +121,10 @@ void read_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key
 
     // compare the first level
     DO_CHECK_R(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
-    DO_CHECK_R(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[SIT_L1_PRE + cnt_x], 56);
-    DO_CHECK_R(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[SIT_L2_PRE + cnt_x], 56);
-    DO_CHECK_R(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[SIT_L3_PRE + cnt_x], 56);
-    DO_CHECK_R(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->root[cnt_x], 56);
+    DO_CHECK_R(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[cnt_xp + SIT_L0_PRE], 56);
+    DO_CHECK_R(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[cnt_xp + SIT_L1_PRE], 56);
+    DO_CHECK_R(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[cnt_xp + SIT_L2_PRE], 56);
+    DO_CHECK_R(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
 }
 
 void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
@@ -139,10 +139,10 @@ void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i ke
 
     // compare the first level
     DO_CHECK_W(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
-    DO_CHECK_W(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[SIT_L1_PRE + cnt_x], 56);
-    DO_CHECK_W(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[SIT_L2_PRE + cnt_x], 56);
-    DO_CHECK_W(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[SIT_L3_PRE + cnt_x], 56);
-    DO_CHECK_W(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->root[cnt_x], 56);
+    DO_CHECK_W(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[cnt_xp + SIT_L0_PRE], 56);
+    DO_CHECK_W(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[cnt_xp + SIT_L1_PRE], 56);
+    DO_CHECK_W(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[cnt_xp + SIT_L2_PRE], 56);
+    DO_CHECK_W(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
 }
 
 int main() {
@@ -163,7 +163,13 @@ int main() {
     uint8_t content[64];
     uint8_t content2[64];
     content[0] = 1;
-    write_cacheline(&memory, 64 * 64, content, key_schedule);
-    read_cacheline(&memory, 64 * 64, content2, key_schedule);
+    for (int i = 1;i < 4096 * 64;i++) {
+        write_cacheline(&memory, 64 * i, content, key_schedule);
+        read_cacheline(&memory, 64, content2, key_schedule);
+    }
     printf("c %d\n", content2[0]);
 }
+
+// 9 -> (1 * 8  +1) -> (0 * 8 + 0)
+// 0 -> (0 * 8 + 0) -> (0 * 8 + 0)
+// 11111111 11111111
