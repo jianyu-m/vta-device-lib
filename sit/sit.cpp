@@ -18,14 +18,38 @@ void *sit_memory;
 
 #define CACHE_SIZE 64
 
+#define MiB (1024 * 1024)
+#define KiB (1024)
+
+#define MEMORY_SIZE (128 * MiB)
+#define TAG_SIZE (16 * MiB)
+#define SIT_L0 (16 * MiB)
+#define SIT_L1 (2 * MiB)
+#define SIT_L2 (256 * KiB)
+#define SIT_L3 (32 * KiB)
+#define SIT_L4 (4 * KiB)
+
+#define SIT_L0_CNT (SIT_L0 / 8)
+#define SIT_L1_CNT (SIT_L1 / 8)
+#define SIT_L2_CNT (SIT_L2 / 8)
+#define SIT_L3_CNT (SIT_L3 / 8)
+#define SIT_L4_CNT (SIT_L4 / 8)
+
+#define SIT_L0_PRE (0)
+#define SIT_L1_PRE (SIT_L0_PRE + SIT_L0_CNT)
+#define SIT_L2_PRE (SIT_L1_PRE + SIT_L1_CNT)
+#define SIT_L3_PRE (SIT_L2_PRE + SIT_L2_CNT)
+#define SIT_L4_PRE (SIT_L3_PRE + SIT_L3_CNT)
+
 typedef struct {
     union {
         struct {
             int main;
             int tag;
             int sit;
+            int root;
         };
-        int data[3];
+        int data[4];
     };
 
 } memory_size_t;
@@ -34,16 +58,15 @@ typedef struct {
     union {
         struct {
             cacheline_t *memory;
-            raw_tag_t *tags;
+            tag_t *tags;
             counter_t *sit;
+            counter_t *root;
             uint8_t *raw_memory;
         };
-        uint8_t* data[4];
+        uint8_t* data[5];
     };
 
 } memory_t;
-
-data_t root_cnt = {0, 0};
 
 void aes128_dec_cacheline(__m128i key_schedule[20], uint8_t *cipher, uint8_t *plaintext) {
     aes128_dec(key_schedule, (uint8_t *)cipher + 0 , (uint8_t *)plaintext + 0 );
@@ -64,65 +87,72 @@ inline void compare_tag(raw_tag_t a, raw_tag_t b) {
     if (!r) {
         printf("tag is not the same!!\n");
     }
+    // else {
+    //     printf("tag is the same!!\n");
+    // }
 }
 
 inline void copy_tag(raw_tag_t dst, raw_tag_t src) {
     memcpy(dst, src, sizeof(raw_tag_t));
 }
 
+#define DO_CHECK_(counter_ptr, hash_ptr, mtag, do_tag, hash_length, do_add)     \
+    cnt_xp = cnt_x;                                                             \
+    cnt_y = (cnt_x % 8);                                                        \
+    cnt_x = (cnt_x / 8);                                                        \
+    counter = (data_t *)(counter_ptr);                                          \
+    if (do_add) counter->c += 1;                                                \
+    vmac##hash_length(key_schedule, (uint8_t *)(hash_ptr), tag, counter->c);    \
+    do_tag(mtag.tag, tag);
+
+#define DO_CHECK_R(counter_ptr, mash_ptr, mtag, hash_length) DO_CHECK_(counter_ptr, mash_ptr, mtag, compare_tag, hash_length, 0)
+#define DO_CHECK_W(counter_ptr, mash_ptr, mtag, hash_length) DO_CHECK_(counter_ptr, mash_ptr, mtag, copy_tag, hash_length, 1)
+
 void read_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
     // aes128_enc(key_schedule, (uint8_t*) main_memory + index / 64, (uint8_t*) main_memory + 16);
     raw_tag_t tag;
     data_t *counter;
+    int cnt_x, cnt_y, cnt_xp;
 
     aes128_dec_cacheline(key_schedule, (uint8_t *)(memory->raw_memory + index), plaintext);
 
     int cl_index = index / 64;
-    int cnt_div = cl_index / 8;
-    int cnt_mod = cl_index % 8;
+    cnt_x = cl_index;
 
     // compare the first level
-    counter = (data_t *)(memory->sit[cnt_div].counters[cnt_mod]);
-    vmac64(key_schedule, (uint8_t *)(memory->raw_memory + index), tag, counter->c);
-    compare_tag(memory->tags[cl_index], tag);
-    // memcmp(tag, memory[1] + cl_index * 8, 7);
-
-    // compare the second level
-    raw_tag_t tag2;
-    vmac56(key_schedule, (uint8_t*)(&memory->sit[cnt_div]), tag2, root_cnt.c);
-    compare_tag(memory->sit[cnt_div].tag, tag2);
+    DO_CHECK_R(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
+    DO_CHECK_R(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[SIT_L1_PRE + cnt_x], 56);
+    DO_CHECK_R(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[SIT_L2_PRE + cnt_x], 56);
+    DO_CHECK_R(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[SIT_L3_PRE + cnt_x], 56);
+    DO_CHECK_R(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->root[cnt_x], 56);
 }
 
 void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
-    // aes128_enc(key_schedule, (uint8_t*) main_memory + index / 64, (uint8_t*) main_memory + 16);
-    uint8_t tag[16];
+    raw_tag_t tag;
     data_t *counter;
+    int cnt_x, cnt_y, cnt_xp;
 
     aes128_enc_cacheline(key_schedule, plaintext, (uint8_t *)(memory->raw_memory + index));
 
     int cl_index = index / 64;
-    int cnt_div = cl_index / 8;
-    int cnt_mod = cl_index % 8;
+    cnt_x = cl_index;
 
     // compare the first level
-    counter = (data_t *)(memory->sit[cnt_div].counters[cnt_mod]);
-    vmac64(key_schedule, (uint8_t *)(memory->raw_memory + index), tag, counter->c);
-    copy_tag(memory->tags[cl_index], tag);
-
-    // compare the second level
-    raw_tag_t tag2;
-    root_cnt.c += 1;
-    vmac56(key_schedule, (uint8_t*)(&memory->sit[cnt_div]), tag2, root_cnt.c);
-    copy_tag(memory->sit[cnt_div].tag, tag2);
+    DO_CHECK_W(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
+    DO_CHECK_W(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[SIT_L1_PRE + cnt_x], 56);
+    DO_CHECK_W(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[SIT_L2_PRE + cnt_x], 56);
+    DO_CHECK_W(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[SIT_L3_PRE + cnt_x], 56);
+    DO_CHECK_W(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->root[cnt_x], 56);
 }
 
 int main() {
-    memory_size_t sizes = {4096, 4096, 4096};
-    memory_t memory = {NULL, NULL, NULL};
-    for (int i  = 0; i < 3;i++) {
+    // we have 3 layers
+    memory_size_t sizes = {128 * MiB, 16 * MiB, SIT_L0 + SIT_L1 + SIT_L2 + SIT_L3, SIT_L4};
+    memory_t memory = {NULL, NULL, NULL, NULL};
+    for (int i  = 0; i < 4;i++) {
         memory.data[i] = (uint8_t*) mmap(0, sizes.data[i], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     }
-    memory.data[3] = memory.data[0];
+    memory.data[4] = memory.data[0];
 
     uint8_t enc_key[]    = {0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c};
     __m128i key_schedule[20];
@@ -133,7 +163,7 @@ int main() {
     uint8_t content[64];
     uint8_t content2[64];
     content[0] = 1;
-    write_cacheline(&memory, 0, content, key_schedule);
-    read_cacheline(&memory, 0, content2, key_schedule);
+    write_cacheline(&memory, 64 * 64, content, key_schedule);
+    read_cacheline(&memory, 64 * 64, content2, key_schedule);
     printf("c %d\n", content2[0]);
 }

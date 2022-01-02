@@ -13,6 +13,11 @@ typedef struct {
 } data_t;
 
 typedef struct {
+    raw_tag_t tag;
+} tag_t;
+
+typedef struct
+{
     raw_counter_t counters[8];
     raw_tag_t tag;
     uint8_t pad;
