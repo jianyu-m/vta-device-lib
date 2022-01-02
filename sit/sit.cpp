@@ -29,11 +29,12 @@ void *sit_memory;
 #define SIT_L3 (32 * KiB)
 #define SIT_L4 (4 * KiB)
 
-#define SIT_L0_CNT (SIT_L0 / 8)
-#define SIT_L1_CNT (SIT_L1 / 8)
-#define SIT_L2_CNT (SIT_L2 / 8)
-#define SIT_L3_CNT (SIT_L3 / 8)
-#define SIT_L4_CNT (SIT_L4 / 8)
+// / size_per_counter / size_per_counterline
+#define SIT_L0_CNT (SIT_L0 / 8 / 8)
+#define SIT_L1_CNT (SIT_L1 / 8 / 8)
+#define SIT_L2_CNT (SIT_L2 / 8 / 8)
+#define SIT_L3_CNT (SIT_L3 / 8 / 8)
+#define SIT_L4_CNT (SIT_L4 / 8 / 8)
 
 #define SIT_L0_PRE (0)
 #define SIT_L1_PRE (SIT_L0_PRE + SIT_L0_CNT)
@@ -120,11 +121,11 @@ void read_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key
     cnt_x = cl_index;
 
     // compare the first level
-    DO_CHECK_R(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
+    DO_CHECK_R(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index),        memory->tags[cl_index], 64);
     DO_CHECK_R(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[cnt_xp + SIT_L0_PRE], 56);
     DO_CHECK_R(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[cnt_xp + SIT_L1_PRE], 56);
     DO_CHECK_R(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[cnt_xp + SIT_L2_PRE], 56);
-    DO_CHECK_R(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
+    DO_CHECK_R(memory->root[cnt_x].counters[cnt_y],             (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
 }
 
 void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
@@ -138,19 +139,19 @@ void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i ke
     cnt_x = cl_index;
 
     // compare the first level
-    DO_CHECK_W(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index), memory->tags[cl_index], 64);
+    DO_CHECK_W(memory->sit[SIT_L0_PRE + cnt_x].counters[cnt_y], (memory->raw_memory + index),        memory->tags[cl_index], 64);
     DO_CHECK_W(memory->sit[SIT_L1_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L0_PRE), memory->sit[cnt_xp + SIT_L0_PRE], 56);
     DO_CHECK_W(memory->sit[SIT_L2_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L1_PRE), memory->sit[cnt_xp + SIT_L1_PRE], 56);
     DO_CHECK_W(memory->sit[SIT_L3_PRE + cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L2_PRE), memory->sit[cnt_xp + SIT_L2_PRE], 56);
-    DO_CHECK_W(memory->root[cnt_x].counters[cnt_y], (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
+    DO_CHECK_W(memory->root[cnt_x].counters[cnt_y],             (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
 }
 
 int main() {
     // we have 3 layers
     memory_size_t sizes = {128 * MiB, 16 * MiB, SIT_L0 + SIT_L1 + SIT_L2 + SIT_L3, SIT_L4};
     memory_t memory = {NULL, NULL, NULL, NULL};
-    for (int i  = 0; i < 4;i++) {
-        memory.data[i] = (uint8_t*) mmap(0, sizes.data[i], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    for (int i = 0; i < 4;i++) {
+        memory.data[i] = (uint8_t*) mmap(0, sizes.data[i], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
     }
     memory.data[4] = memory.data[0];
 
@@ -163,13 +164,9 @@ int main() {
     uint8_t content[64];
     uint8_t content2[64];
     content[0] = 1;
-    for (int i = 1;i < 4096 * 64;i++) {
+    for (int i = 1;i < 128 * MiB / 64 - 1;i++) {
         write_cacheline(&memory, 64 * i, content, key_schedule);
         read_cacheline(&memory, 64, content2, key_schedule);
     }
     printf("c %d\n", content2[0]);
 }
-
-// 9 -> (1 * 8  +1) -> (0 * 8 + 0)
-// 0 -> (0 * 8 + 0) -> (0 * 8 + 0)
-// 11111111 11111111
