@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sodium.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 
 // this simulate the SGX integrity tree (SIT)
 
@@ -146,6 +147,14 @@ void write_cacheline(memory_t *memory, int index, uint8_t* plaintext, __m128i ke
     DO_CHECK_W(memory->root[cnt_x].counters[cnt_y],             (memory->sit + cnt_xp + SIT_L3_PRE), memory->sit[cnt_xp + SIT_L3_PRE], 56);
 }
 
+void read_cacheline_confidential(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
+    aes128_dec_cacheline(key_schedule, (uint8_t *)(memory->raw_memory + index), plaintext);
+}
+
+void write_cacheline_confidential(memory_t *memory, int index, uint8_t* plaintext, __m128i key_schedule[20]) {
+    aes128_enc_cacheline(key_schedule, plaintext, (uint8_t *)(memory->raw_memory + index));
+}
+
 int main() {
     // we have 3 layers
     memory_size_t sizes = {128 * MiB, 16 * MiB, SIT_L0 + SIT_L1 + SIT_L2 + SIT_L3, SIT_L4};
@@ -164,9 +173,22 @@ int main() {
     uint8_t content[64];
     uint8_t content2[64];
     content[0] = 1;
+    struct timeval tvs, tve;
+    gettimeofday(&tvs, 0);
     for (int i = 1;i < 128 * MiB / 64 - 1;i++) {
         write_cacheline(&memory, 64 * i, content, key_schedule);
         read_cacheline(&memory, 64, content2, key_schedule);
     }
+    gettimeofday(&tve, 0);
+
+    printf("time %ld\n", (tve.tv_sec - tvs.tv_sec) * 1000 + (tve.tv_usec - tvs.tv_usec) / 1000);
+    gettimeofday(&tvs, 0);
+    for (int i = 1;i < 128 * MiB / 64 - 1;i++) {
+        write_cacheline_confidential(&memory, 64 * i, content, key_schedule);
+        read_cacheline_confidential(&memory, 64, content2, key_schedule);
+    }
+    gettimeofday(&tve, 0);
+    printf("time %ld\n", (tve.tv_sec - tvs.tv_sec) * 1000 + (tve.tv_usec - tvs.tv_usec) / 1000);
+
     printf("c %d\n", content2[0]);
 }
