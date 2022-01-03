@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.13)  # CMake version check
 project(simple_example)               # Create project "simple_example"
 set(CMAKE_CXX_STANDARD 17)            # Enable c++14 standard
 
-set (CMAKE_CXX_FLAGS "-O3")
+set (CMAKE_CXX_FLAGS "-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vbmi -mavx512vbmi2 -mavx512vl -mavx512cd -mavx512ifma -msse2 -mavx -march=native -ffast-math")
 
 include_directories(./)
 # Add main.cpp file of project root directory as source file

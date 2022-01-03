@@ -32,6 +32,7 @@
 #include <cstring>
 #include <sstream>
 #include <atomic>
+#include <immintrin.h>
 
 #include "vmem/virtual_memory.h"
 
@@ -114,7 +115,7 @@ class BitPacker {
     }
   }
 
-  void SetSigned(uint32_t index, int32_t value) {
+  inline void SetSigned(uint32_t index, int32_t value) {
     if (bits == 32) {
       reinterpret_cast<int32_t*>(data_)[index] = value;
     } else if (bits == 16) {
@@ -237,8 +238,11 @@ class SRAM {
         _sram_ptr += op->x_pad_0;
 
         int32_t* sram_ele_ptr = (int32_t*)_sram_ptr;
-        for (uint32_t x = 0; x < op->x_size * VTA_BATCH * VTA_BLOCK_OUT; ++x) {
+        // __m512i mm_sram;
+        for (uint32_t x = 0; x < op->x_size * VTA_BATCH * VTA_BLOCK_OUT / 16; ++x) {
           *(sram_ele_ptr + x) = (int32_t)*(_dram_ptr + x);
+          // mm_sram = _mm512_load_si512(_dram_ptr + x * 16);
+          // _mm512_store_si512(sram_ele_ptr + x * 16, mm_sram);
         }
         _sram_ptr += op->x_size;
 
@@ -437,40 +441,77 @@ class Device {
     if (!op->reset_reg) {
       prof_->gemm_counter += op->iter_out * op->iter_in * (op->uop_end - op->uop_bgn);
       if (prof_->SkipExec()) return;
-      tpool.parallelize_loop(0, op->iter_out, [&op, idx, this](u32 y){
-      // for (uint32_t y = start; y < end; ++y) {
-        for (uint32_t x = 0; x < op->iter_in; ++x) {
-          for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
-            VTAUop* uop_ptr = static_cast<VTAUop*>(uop_[idx].BeginPtr(uindex));
-            // Read in memory indices
-            uint32_t acc_idx = uop_ptr->dst_idx;
-            uint32_t inp_idx = uop_ptr->src_idx;
-            uint32_t wgt_idx = uop_ptr->wgt_idx;
+      if (op->iter_out > op->iter_in) {
+        tpool.parallelize_loop(0, op->iter_out, [&op, idx, this](u32 y){
+        // for (uint32_t y = start; y < end; ++y) {
+          for (uint32_t x = 0; x < op->iter_in; ++x) {
+            for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
+              VTAUop* uop_ptr = static_cast<VTAUop*>(uop_[idx].BeginPtr(uindex));
+              // Read in memory indices
+              uint32_t acc_idx = uop_ptr->dst_idx;
+              uint32_t inp_idx = uop_ptr->src_idx;
+              uint32_t wgt_idx = uop_ptr->wgt_idx;
 
-            acc_idx += y * op->dst_factor_out + x * op->dst_factor_in;
-            inp_idx += y * op->src_factor_out + x * op->src_factor_in;
-            wgt_idx += y * op->wgt_factor_out + x * op->wgt_factor_in;
-            BitPacker<VTA_ACC_WIDTH> acc(acc_[idx].BeginPtr(acc_idx));
-            BitPacker<VTA_INP_WIDTH> inp(inp_[idx].BeginPtr(inp_idx));
-            BitPacker<VTA_WGT_WIDTH> wgt(wgt_[idx].BeginPtr(wgt_idx));
+              acc_idx += y * op->dst_factor_out + x * op->dst_factor_in;
+              inp_idx += y * op->src_factor_out + x * op->src_factor_in;
+              wgt_idx += y * op->wgt_factor_out + x * op->wgt_factor_in;
+              BitPacker<VTA_ACC_WIDTH> acc(acc_[idx].BeginPtr(acc_idx));
+              BitPacker<VTA_INP_WIDTH> inp(inp_[idx].BeginPtr(inp_idx));
+              BitPacker<VTA_WGT_WIDTH> wgt(wgt_[idx].BeginPtr(wgt_idx));
 
-            // gemm loop
-            for (uint32_t i = 0; i < VTA_BATCH; ++i) {
-              for (uint32_t j = 0; j < VTA_BLOCK_OUT; ++j) {
-                uint32_t acc_offset = i * VTA_BLOCK_OUT + j;
-                int32_t sum = acc.GetSigned(acc_offset);
-                for (uint32_t k = 0; k < VTA_BLOCK_IN; ++k) {
-                  sum +=
-                      inp.GetSigned(i * VTA_BLOCK_IN + k) *
-                      wgt.GetSigned(j * VTA_BLOCK_IN + k);
+              // gemm loop
+              for (uint32_t i = 0; i < VTA_BATCH; ++i) {
+                for (uint32_t j = 0; j < VTA_BLOCK_OUT; ++j) {
+                  uint32_t acc_offset = i * VTA_BLOCK_OUT + j;
+                  int32_t sum = acc.GetSigned(acc_offset);
+                  for (uint32_t k = 0; k < VTA_BLOCK_IN; ++k) {
+                    sum +=
+                        inp.GetSigned(i * VTA_BLOCK_IN + k) *
+                        wgt.GetSigned(j * VTA_BLOCK_IN + k);
+                  }
+                  acc.SetSigned(acc_offset, sum);
                 }
-                acc.SetSigned(acc_offset, sum);
               }
             }
           }
+        // }
+      });
+      } else {
+        tpool.parallelize_loop(0, op->iter_in, [&op, idx, this](u32 x){
+        for (uint32_t y = 0; y < op->iter_out; ++y) {
+          // for (uint32_t x = 0; x < op->iter_in; ++x) {
+            for (uint32_t uindex = op->uop_bgn; uindex < op->uop_end; ++uindex) {
+              VTAUop* uop_ptr = static_cast<VTAUop*>(uop_[idx].BeginPtr(uindex));
+              // Read in memory indices
+              uint32_t acc_idx = uop_ptr->dst_idx;
+              uint32_t inp_idx = uop_ptr->src_idx;
+              uint32_t wgt_idx = uop_ptr->wgt_idx;
+
+              acc_idx += y * op->dst_factor_out + x * op->dst_factor_in;
+              inp_idx += y * op->src_factor_out + x * op->src_factor_in;
+              wgt_idx += y * op->wgt_factor_out + x * op->wgt_factor_in;
+              BitPacker<VTA_ACC_WIDTH> acc(acc_[idx].BeginPtr(acc_idx));
+              BitPacker<VTA_INP_WIDTH> inp(inp_[idx].BeginPtr(inp_idx));
+              BitPacker<VTA_WGT_WIDTH> wgt(wgt_[idx].BeginPtr(wgt_idx));
+
+              // gemm loop
+              for (uint32_t i = 0; i < VTA_BATCH; ++i) {
+                for (uint32_t j = 0; j < VTA_BLOCK_OUT; ++j) {
+                  uint32_t acc_offset = i * VTA_BLOCK_OUT + j;
+                  int32_t sum = acc.GetSigned(acc_offset);
+                  for (uint32_t k = 0; k < VTA_BLOCK_IN; ++k) {
+                    sum +=
+                        inp.GetSigned(i * VTA_BLOCK_IN + k) *
+                        wgt.GetSigned(j * VTA_BLOCK_IN + k);
+                  }
+                  acc.SetSigned(acc_offset, sum);
+                }
+              }
+            }
+          // }
         }
-      // }       
-     });
+      });
+      }
     } else {
       if (prof_->SkipExec()) return;
       // reset
@@ -487,7 +528,7 @@ class Device {
               }
             }
           }
-        // }        
+        // }
       }); 
     }
   }

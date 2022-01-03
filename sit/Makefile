@@ -1,6 +1,6 @@
 
-sit: sit.cpp
-	g++ -o sit -g -maes sit.cpp
+sit: sit.cpp vmac.h
+	g++ -o sit -O3 -maes sit.cpp
 
 clean:
 	rm -rf sit
